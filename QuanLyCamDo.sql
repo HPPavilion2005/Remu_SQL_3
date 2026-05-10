@@ -205,3 +205,243 @@ VALUES
     1000000,
     N'Nhân viên B'
 );
+
+INSERT INTO LichSuTrangThai
+(
+    MaHD,
+    TrangThaiCu,
+    TrangThaiMoi
+)
+VALUES
+(
+    1,
+    N'Đang vay',
+    N'Đang trả góp'
+);
+
+SELECT * FROM KhachHang;
+SELECT * FROM HopDong;
+SELECT * FROM TaiSan;
+GO
+
+CREATE PROCEDURE sp_CreateContract
+(
+    @HoTen NVARCHAR(100),
+    @SoDienThoai VARCHAR(15),
+    @CCCD VARCHAR(20),
+    @DiaChi NVARCHAR(255),
+
+    @TenTaiSan NVARCHAR(100),
+    @GiaTriDinhGia DECIMAL(18,2),
+
+    @TienGoc DECIMAL(18,2),
+    @NgayVay DATE
+)
+AS
+BEGIN
+
+    --------------------------------
+    -- 1. Thêm khách hàng
+    --------------------------------
+
+    INSERT INTO KhachHang
+    (
+        HoTen,
+        SoDienThoai,
+        CCCD,
+        DiaChi
+    )
+    VALUES
+    (
+        @HoTen,
+        @SoDienThoai,
+        @CCCD,
+        @DiaChi
+    );
+
+    DECLARE @MaKH INT;
+
+    SET @MaKH = SCOPE_IDENTITY();
+
+    --------------------------------
+    -- 2. Tạo hợp đồng
+    --------------------------------
+
+    DECLARE @Deadline1 DATE;
+    DECLARE @Deadline2 DATE;
+
+    SET @Deadline1 =
+        DATEADD(DAY, 10, @NgayVay);
+
+    SET @Deadline2 =
+        DATEADD(DAY, 20, @NgayVay);
+
+    INSERT INTO HopDong
+    (
+        MaKH,
+        NgayVay,
+        TienGoc,
+        Deadline1,
+        Deadline2,
+        TrangThai
+    )
+    VALUES
+    (
+        @MaKH,
+        @NgayVay,
+        @TienGoc,
+        @Deadline1,
+        @Deadline2,
+        N'Đang vay'
+    );
+
+    DECLARE @MaHD INT;
+
+    SET @MaHD = SCOPE_IDENTITY();
+
+    --------------------------------
+    -- 3. Thêm tài sản
+    --------------------------------
+
+    INSERT INTO TaiSan
+    (
+        TenTaiSan,
+        GiaTriDinhGia,
+        TrangThai
+    )
+    VALUES
+    (
+        @TenTaiSan,
+        @GiaTriDinhGia,
+        N'Đang giữ'
+    );
+
+    DECLARE @MaTS INT;
+
+    SET @MaTS = SCOPE_IDENTITY();
+
+    --------------------------------
+    -- 4. Gắn tài sản vào hợp đồng
+    --------------------------------
+
+    INSERT INTO HopDong_TaiSan
+    (
+        MaHD,
+        MaTS
+    )
+    VALUES
+    (
+        @MaHD,
+        @MaTS
+    );
+
+END;
+GO
+
+EXEC sp_CreateContract
+
+    @HoTen = N'Nguyễn Văn C',
+    @SoDienThoai = '0911111111',
+    @CCCD = '123123123',
+    @DiaChi = N'Hà Nội',
+
+    @TenTaiSan = N'iPhone 16',
+    @GiaTriDinhGia = 25000000,
+
+    @TienGoc = 10000000,
+    @NgayVay = '2026-05-08';
+
+SELECT * FROM KhachHang;
+SELECT * FROM HopDong;
+SELECT * FROM TaiSan;
+SELECT * FROM HopDong_TaiSan;
+GO
+
+CREATE FUNCTION fn_CalcMoneyTransaction
+(
+    @TransactionID INT,
+    @TargetDate DATE
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+
+    DECLARE @TienGoc DECIMAL(18,2);
+    DECLARE @NgayVay DATE;
+    DECLARE @Deadline1 DATE;
+
+    DECLARE @TongNo DECIMAL(18,2);
+
+    SELECT
+        @TienGoc = TienGoc,
+        @NgayVay = NgayVay,
+        @Deadline1 = Deadline1
+    FROM HopDong
+    WHERE MaHD = @TransactionID;
+
+    IF @TargetDate <= @Deadline1
+    BEGIN
+
+        DECLARE @SoNgay INT;
+
+        SET @SoNgay =
+            DATEDIFF(DAY, @NgayVay, @TargetDate);
+
+        SET @TongNo =
+            @TienGoc +
+            (@TienGoc * 0.005 * @SoNgay);
+
+    END
+
+    ELSE
+    BEGIN
+
+        DECLARE @NgayLaiDon INT;
+
+        SET @NgayLaiDon =
+            DATEDIFF(DAY, @NgayVay, @Deadline1);
+
+        DECLARE @TienSauLaiDon DECIMAL(18,2);
+
+        SET @TienSauLaiDon =
+            @TienGoc +
+            (@TienGoc * 0.005 * @NgayLaiDon);
+
+        DECLARE @NgayQuaHan INT;
+
+        SET @NgayQuaHan =
+            DATEDIFF(DAY, @Deadline1, @TargetDate);
+
+        SET @TongNo =
+            @TienSauLaiDon *
+            POWER(1.005, @NgayQuaHan);
+
+    END
+
+    RETURN @TongNo;
+
+END;
+GO
+
+CREATE FUNCTION fn_CalcMoneyContract
+(
+    @ContractID INT,
+    @TargetDate DATE
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+
+    DECLARE @TongTien DECIMAL(18,2);
+
+    SET @TongTien =
+        dbo.fn_CalcMoneyTransaction
+        (
+            @ContractID,
+            @TargetDate
+        );
+
+    RETURN @TongTien;
+
+END;
+GO
