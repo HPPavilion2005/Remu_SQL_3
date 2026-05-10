@@ -1,4 +1,4 @@
 # Remu_SQL_3
-## Bài tập về nhà 03: THIẾT KẾ VÀ CÀI ĐẶT CSDL QUẢN LÝ CẦM ĐỒ
--------------------------------------------------------------
+Bài tập về nhà 03: THIẾT KẾ VÀ CÀI ĐẶT CSDL QUẢN LÝ CẦM ĐỒ
+
 
