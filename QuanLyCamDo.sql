@@ -1,0 +1,16 @@
+USE Baitap03
+GO
+
+CREATE TABLE KhachHang (
+
+    MaKH INT PRIMARY KEY IDENTITY(1,1),
+
+    HoTen NVARCHAR(100),
+
+    SoDienThoai VARCHAR(15),
+
+    CCCD VARCHAR(20),
+
+    DiaChi NVARCHAR(255)
+
+);
