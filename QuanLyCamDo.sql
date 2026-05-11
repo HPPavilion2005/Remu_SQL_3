@@ -445,3 +445,401 @@ BEGIN
 
 END;
 GO
+
+ALTER TABLE TaiSan
+ADD IsSold BIT DEFAULT 0;
+GO
+
+ALTER TABLE ThanhToan
+ADD SoTienConNo DECIMAL(18,2);
+GO
+
+CREATE PROCEDURE sp_PayDebt
+(
+    @MaHD INT,
+    @SoTienTra DECIMAL(18,2),
+    @NguoiThu NVARCHAR(100)
+)
+AS
+BEGIN
+
+    --------------------------------
+    -- 1. Kiểm tra tài sản thanh lý
+    --------------------------------
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM HopDong_TaiSan HDTS
+
+        JOIN TaiSan TS
+            ON HDTS.MaTS = TS.MaTS
+
+        WHERE HDTS.MaHD = @MaHD
+        AND TS.IsSold = 1
+    )
+    BEGIN
+
+        PRINT N'Tài sản đã thanh lý. Không thể thu tiền hoặc trả đồ.';
+        RETURN;
+
+    END
+
+    --------------------------------
+    -- 2. Tính tổng nợ
+    --------------------------------
+
+    DECLARE @TongNo DECIMAL(18,2);
+
+    SET @TongNo =
+        dbo.fn_CalcMoneyContract
+        (
+            @MaHD,
+            GETDATE()
+        );
+
+    --------------------------------
+    -- 3. Tính tiền còn nợ
+    --------------------------------
+
+    DECLARE @ConNo DECIMAL(18,2);
+
+    SET @ConNo =
+        @TongNo - @SoTienTra;
+
+    --------------------------------
+    -- 4. Ghi log thanh toán
+    --------------------------------
+
+    INSERT INTO ThanhToan
+    (
+        MaHD,
+        NgayThanhToan,
+        SoTienTra,
+        NguoiThu,
+        SoTienConNo
+    )
+    VALUES
+    (
+        @MaHD,
+        GETDATE(),
+        @SoTienTra,
+        @NguoiThu,
+        @ConNo
+    );
+
+    --------------------------------
+    -- 5. Nếu trả đủ
+    --------------------------------
+
+    IF @ConNo <= 0
+    BEGIN
+
+        UPDATE HopDong
+        SET TrangThai =
+            N'Đã thanh toán đủ'
+        WHERE MaHD = @MaHD;
+
+        UPDATE TaiSan
+        SET TrangThai =
+            N'Đã trả khách'
+        WHERE MaTS IN
+        (
+            SELECT MaTS
+            FROM HopDong_TaiSan
+            WHERE MaHD = @MaHD
+        );
+
+        PRINT N'Khách đã trả đủ tiền. Hoàn trả tài sản.';
+
+    END
+
+    --------------------------------
+    -- 6. Nếu chưa trả đủ
+    --------------------------------
+
+    ELSE
+    BEGIN
+
+        UPDATE HopDong
+        SET TrangThai =
+            N'Đang trả góp'
+        WHERE MaHD = @MaHD;
+
+        PRINT N'Khách chưa trả đủ. Đã cập nhật trả góp.';
+
+    END
+
+    --------------------------------
+    -- 7. Gợi ý tài sản có thể trả
+    --------------------------------
+
+    PRINT N'Danh sách tài sản có thể trả:';
+
+    SELECT
+        TS.MaTS,
+        TS.TenTaiSan,
+        TS.GiaTriDinhGia
+    FROM TaiSan TS
+
+    JOIN HopDong_TaiSan HDTS
+        ON TS.MaTS = HDTS.MaTS
+
+    WHERE HDTS.MaHD = @MaHD
+    AND TS.GiaTriDinhGia >= @ConNo;
+
+END;
+GO
+
+DROP FUNCTION IF EXISTS fn_SoNgayQuaHan;
+GO
+
+CREATE FUNCTION fn_SoNgayQuaHan
+(
+    @MaHD INT
+)
+RETURNS INT
+AS
+BEGIN
+
+    DECLARE @SoNgay INT;
+
+    SELECT
+        @SoNgay =
+            DATEDIFF
+            (
+                DAY,
+                Deadline1,
+                GETDATE()
+            )
+    FROM HopDong
+    WHERE MaHD = @MaHD;
+
+    RETURN @SoNgay;
+
+END;
+GO
+
+SELECT
+
+    KH.HoTen,
+    KH.SoDienThoai,
+
+    HD.TienGoc,
+
+    dbo.fn_SoNgayQuaHan
+    (
+        HD.MaHD
+    ) AS SoNgayQuaHan,
+
+    dbo.fn_CalcMoneyContract
+    (
+        HD.MaHD,
+        GETDATE()
+    ) AS TongNoHienTai,
+
+    dbo.fn_CalcMoneyContract
+    (
+        HD.MaHD,
+        DATEADD(MONTH, 1, GETDATE())
+    ) AS TongNoSau1Thang
+
+FROM HopDong HD
+
+JOIN KhachHang KH
+    ON HD.MaKH = KH.MaKH
+
+WHERE
+    GETDATE() > HD.Deadline1
+
+AND
+    HD.TrangThai != N'Đã thanh toán đủ';
+
+DROP TRIGGER IF EXISTS trg_BadDebt;
+GO
+
+CREATE TRIGGER trg_BadDebt
+ON HopDong
+AFTER INSERT, UPDATE
+AS
+BEGIN
+
+    UPDATE HopDong
+    SET TrangThai =
+        N'Quá hạn (nợ xấu)'
+
+    WHERE
+        TrangThai = N'Đang vay'
+
+    AND
+        GETDATE() > Deadline1;
+
+END;
+GO
+
+DROP TRIGGER IF EXISTS trg_ReadyToSell;
+GO
+
+CREATE TRIGGER trg_ReadyToSell
+ON HopDong
+AFTER UPDATE
+AS
+BEGIN
+
+    UPDATE TaiSan
+    SET TrangThai =
+        N'Sẵn sàng thanh lý'
+
+    WHERE MaTS IN
+    (
+        SELECT HDTS.MaTS
+
+        FROM HopDong_TaiSan HDTS
+
+        JOIN HopDong HD
+            ON HDTS.MaHD = HD.MaHD
+
+        WHERE
+            HD.TrangThai =
+                N'Quá hạn (nợ xấu)'
+
+        AND
+            GETDATE() > HD.Deadline2
+    );
+
+END;
+GO
+
+DROP TRIGGER IF EXISTS trg_SoldAsset;
+GO
+
+CREATE TRIGGER trg_SoldAsset
+ON HopDong
+AFTER UPDATE
+AS
+BEGIN
+
+    UPDATE TaiSan
+    SET
+        TrangThai =
+            N'Đã bán thanh lý',
+
+        IsSold = 1
+
+    WHERE MaTS IN
+    (
+        SELECT HDTS.MaTS
+
+        FROM HopDong_TaiSan HDTS
+
+        JOIN inserted i
+            ON HDTS.MaHD = i.MaHD
+
+        WHERE
+            i.TrangThai =
+                N'Đã thanh lý'
+    );
+
+END;
+GO
+
+DROP PROCEDURE IF EXISTS sp_ExtendContract;
+GO
+
+CREATE PROCEDURE sp_ExtendContract
+(
+    @MaHD INT,
+    @TienTra DECIMAL(18,2)
+)
+AS
+BEGIN
+
+    --------------------------------
+    -- 1. Lấy thông tin hợp đồng
+    --------------------------------
+
+    DECLARE @TienGoc DECIMAL(18,2);
+    DECLARE @NgayVay DATE;
+
+    SELECT
+        @TienGoc = TienGoc,
+        @NgayVay = NgayVay
+    FROM HopDong
+    WHERE MaHD = @MaHD;
+
+    --------------------------------
+    -- 2. Tính tiền lãi hiện tại
+    --------------------------------
+
+    DECLARE @TongNo DECIMAL(18,2);
+
+    SET @TongNo =
+        dbo.fn_CalcMoneyContract
+        (
+            @MaHD,
+            GETDATE()
+        );
+
+    DECLARE @TienLai DECIMAL(18,2);
+
+    SET @TienLai =
+        @TongNo - @TienGoc;
+
+    --------------------------------
+    -- 3. Kiểm tra khách trả đủ lãi chưa
+    --------------------------------
+
+    IF @TienTra >= @TienLai
+    BEGIN
+
+        --------------------------------
+        -- Gia hạn deadline
+        --------------------------------
+
+        UPDATE HopDong
+        SET
+            Deadline1 =
+                DATEADD(DAY, 10, GETDATE()),
+
+            Deadline2 =
+                DATEADD(DAY, 20, GETDATE()),
+
+            TrangThai =
+                N'Đã gia hạn'
+
+        WHERE MaHD = @MaHD;
+
+        --------------------------------
+        -- Ghi log
+        --------------------------------
+
+        INSERT INTO ThanhToan
+        (
+            MaHD,
+            NgayThanhToan,
+            SoTienTra,
+            NguoiThu,
+            SoTienConNo
+        )
+        VALUES
+        (
+            @MaHD,
+            GETDATE(),
+            @TienTra,
+            N'Gia hạn hợp đồng',
+            @TienGoc
+        );
+
+        PRINT N'Gia hạn hợp đồng thành công.';
+
+    END
+
+    ELSE
+    BEGIN
+
+        PRINT N'Khách chưa trả đủ tiền lãi để gia hạn.';
+
+    END
+
+END;
+GO
